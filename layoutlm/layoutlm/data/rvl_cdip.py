@@ -5,9 +5,7 @@ import logging
 import os
 import re
 from multiprocessing import Pool
-
 import torch
-from lxml import html
 from torch.utils.data import TensorDataset
 from tqdm import tqdm
 from transformers import DataProcessor
@@ -82,34 +80,43 @@ class CdipProcessor(DataProcessor):
         return self._create_examples(lines, mode)
 
     def read_hocr_file(self, data_dir, file):
-        hocr_file = os.path.join(data_dir, "images", file[:-4] + ".xml")
-        text_buffer = []
-        bbox_buffer = []
-        try:
-            doc = html.parse(hocr_file)
-        except AssertionError:
-            logger.warning(
-                "%s is empty or its format is unacceptable. Skipped.", hocr_file
-            )
-            return [], []
-        for page in doc.xpath("//*[@class='ocr_page']"):
-            page_bbox = [int(x) for x in get_prop(page, "bbox").split()]
-            width, height = page_bbox[2], page_bbox[3]
-            for word in doc.xpath("//*[@class='ocrx_word']"):
-                textnodes = word.xpath(".//text()")
-                s = "".join([text for text in textnodes])
-                text = re.sub(r"\s+", " ", s).strip()
-                if text:
-                    text_buffer.append(text)
-                    bbox = [int(x) for x in get_prop(word, "bbox").split()]
-                    bbox = [
-                        bbox[0] / width,
-                        bbox[1] / height,
-                        bbox[2] / width,
-                        bbox[3] / height,
-                    ]
-                    bbox = [int(x * 1000) for x in bbox]
-                    bbox_buffer.append(bbox)
+        hocr_file = os.path.join(data_dir, "images", file[:-4] + ".txt")
+        with open(hocr_file, 'r', encoding='UTF-8') as f:
+            strs = f.readline()
+        pos = 0
+
+        key = ['"words":"', '"top":', '"left":', '"width":', '"height":']
+        ans = []
+        while pos >= 0:
+            temp = []
+            for i in range(5):
+                if strs.find(key[i], pos) < 0:
+                    pos = -1
+                    break
+                pos = strs.find(key[i], pos) + len(key[i])
+                word = ""
+                if i == 0:
+                    while strs[pos] != '"':
+                        word = word + strs[pos]
+                        pos += 1
+                else:
+                    while strs[pos] <= '9' and strs[pos] >= '0':
+                        word = word + strs[pos]
+                        pos += 1
+                    word = int(word)
+                temp.append(word)
+            ans.append(temp)
+        width, height = 0, 0
+        text_buffer, bbox_buffer = [], []
+        for item in ans:
+            if (len(item) == 5):
+                text_buffer.append(item[0])
+                bbox_buffer.append([item[2], item[1], (item[3] + item[2]), (item[4] + item[1])])
+                height = max(height, (item[4] + item[1])) + 100
+                width = max(width, (item[3] + item[2])) + 100
+        for i in range(len(bbox_buffer)):
+            bbox_buffer[i] = [bbox_buffer[i][0] * 1000 // width, bbox_buffer[i][1] * 1000 // height,
+                              bbox_buffer[i][2] * 1000 // width, bbox_buffer[i][3] * 1000 // height]
         return text_buffer, bbox_buffer
 
     def get_labels(self):
